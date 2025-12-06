@@ -16,12 +16,22 @@ from datetime import datetime
 model = None
 model_lock = threading.Lock()
 
-try:
-    model = YOLO("yolov8n-face.pt")
-    print("✓ Modelo YOLO cargado correctamente")
-except Exception as e:
-    print(f"✗ Error al cargar el modelo YOLO: {e}")
-    raise RuntimeError(f"No se pudo cargar el modelo YOLO: {e}")
+def load_model():
+    """Carga el modelo YOLO con reintentos y manejo de errores"""
+    global model
+    try:
+        print("⏳ Cargando modelo YOLO yolov8n-face...")
+        # download=True fuerza la descarga si no existe
+        model = YOLO("yolov8n-face.pt")
+        print("✓ Modelo YOLO cargado correctamente")
+        return True
+    except Exception as e:
+        print(f"✗ Error al cargar el modelo YOLO: {e}")
+        print("⚠️ El modelo se descargará en el primer request")
+        return False
+
+# Intentar cargar el modelo al iniciar
+model_loaded = load_model()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -43,6 +53,15 @@ def process_image(image):
     - Imagen procesada con cuadros y etiquetas
     - Lista de resultados (etiqueta y coordenadas)
     """
+    global model
+    
+    # Si el modelo no está cargado, intentar cargarlo
+    if model is None:
+        print("⏳ Primer uso - descargando modelo YOLO...")
+        load_model()
+        if model is None:
+            raise RuntimeError("No se pudo cargar el modelo YOLO")
+    
     detections_list = []
     results_detections = []
     
@@ -193,10 +212,19 @@ def dataset_status():
         return jsonify({
             'con_mascarilla': con_mascarilla,
             'sin_mascarilla': sin_mascarilla,
-            'total': con_mascarilla + sin_mascarilla
+            'total': con_mascarilla + sin_mascarilla,
+            'model_loaded': model is not None
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/model-status')
+def model_status():
+    """Retorna el estado del modelo YOLO"""
+    return jsonify({
+        'model_loaded': model is not None,
+        'status': 'ready' if model is not None else 'loading'
+    }), 200
 
 if __name__ == '__main__':
     import os
