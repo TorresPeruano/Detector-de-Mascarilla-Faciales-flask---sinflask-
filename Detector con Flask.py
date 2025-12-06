@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, send_file, jsonify
 import cv2
-import mediapipe as mp
+from ultralytics import YOLO 
 import numpy as np
 import os
 import random
@@ -8,6 +8,15 @@ import base64
 import io
 from werkzeug.utils import secure_filename
 from datetime import datetime
+
+# --- Configuración del Modelo YOLO ---
+# Cargar el modelo YOLOv8 para detección de rostros
+# El modelo se descargará automáticamente si no existe localmente.
+try:
+    model = YOLO("yolov8n-face.pt")
+except Exception as e:
+    print(f"Error al cargar el modelo YOLO: {e}")
+    # Considerar o manejar la excepción apropiadamente.
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -19,79 +28,70 @@ os.makedirs("Dataset/Con_Mascarilla", exist_ok=True)
 os.makedirs("Dataset/Sin_Mascarilla", exist_ok=True)
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Inicializar MediaPipe Face Detection
-mp_face = mp.solutions.face_detection
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def process_image(image):
     """
-    Detecta rostros en la imagen usando MediaPipe y retorna:
+    Detecta rostros en la imagen usando YOLOv8 y retorna:
     - Imagen procesada con cuadros y etiquetas
     - Lista de resultados (etiqueta y coordenadas)
     """
     detections_list = []
     results_detections = []
     
-    with mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.5) as face_detection:
-        # Convertir a RGB para MediaPipe
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Procesar con MediaPipe
-        results = face_detection.process(image_rgb)
-        
-        if results.detections:
-            ih, iw, _ = image.shape
-            
-            for idx, detection in enumerate(results.detections):
-                bbox = detection.location_data.relative_bounding_box
-                x = int(bbox.xmin * iw)
-                y = int(bbox.ymin * ih)
-                w = int(bbox.width * iw)
-                h = int(bbox.height * ih)
-                
-                # Validar que las coordenadas sean válidas
-                if x < 0 or y < 0 or w <= 0 or h <= 0:
-                    continue
-                
-                # Asegurar que no salen del rango
-                x = max(0, x)
-                y = max(0, y)
-                w = min(w, iw - x)
-                h = min(h, ih - y)
-                
-                rostro = image[y:y+h, x:x+w].copy()
-                
-                if rostro.size == 0:
-                    continue
-                
-                # Clasificación aleatoria simulada
-                tiene_mascarilla = random.choice([True, False])
-                label = "Con Mascarilla" if tiene_mascarilla else "Sin Mascarilla"
-                color = (0, 255, 0) if tiene_mascarilla else (0, 0, 255)
-                
-                # Guardar imagen recortada en el dataset
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                file_path = f"Dataset/{label}/rostro_{timestamp}_{idx}.jpg"
-                cv2.imwrite(file_path, rostro)
-                
-                # Dibujar cuadros en la imagen original
-                cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                
-                detections_list.append({
-                    'id': idx,
-                    'label': label,
-                    'coords': {'x': x, 'y': y, 'w': w, 'h': h}
-                })
-                
-                results_detections.append({
-                    'label': label,
-                    'color': color,
-                    'saved_path': file_path
-                })
+    # Realizar la inferencia con el modelo YOLO (verbose=False para un output limpio)
+    results = model(image, verbose=False)
     
+    for r in results:
+        # 'r.boxes' contiene todos los cuadros delimitadores detectados
+        for box in r.boxes:
+            # Obtener coordenadas del cuadro (xmin, ymin, xmax, ymax) en píxeles enteros
+            x1, y1, x2, y2 = box.xyxy[0].int().tolist()
+            
+            # Calcular ancho y alto (formato x, y, w, h)
+            x = x1
+            y = y1
+            w = x2 - x1
+            h = y2 - y1
+            
+            # Asegurar que las coordenadas son válidas
+            if w <= 0 or h <= 0:
+                continue
+            
+            # Recortar el rostro
+            rostro = image[y:y+h, x:x+w].copy()
+            
+            if rostro.size == 0:
+                continue
+            
+            # Clasificación aleatoria simulada
+            tiene_mascarilla = random.choice([True, False])
+            label = "Con Mascarilla" if tiene_mascarilla else "Sin Mascarilla"
+            color = (0, 255, 0) if tiene_mascarilla else (0, 0, 255) # Verde / Rojo
+            
+            # Guardar imagen recortada en el dataset
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path = f"Dataset/{label}/rostro_yolo_{timestamp}_{random.randint(0, 999)}.jpg"
+            cv2.imwrite(file_path, rostro)
+            
+            # Dibujar cuadros en la imagen original
+            cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            
+            detections_list.append({
+                'id': len(detections_list),
+                'label': label,
+                'coords': {'x': x, 'y': y, 'w': w, 'h': h}
+            })
+            
+            results_detections.append({
+                'label': label,
+                'color': color,
+                'saved_path': file_path
+            })
+            
     return image, detections_list, results_detections
 
 @app.route('/')
@@ -120,7 +120,7 @@ def upload_file():
         if image is None:
             return jsonify({'error': 'Invalid image file'}), 400
         
-        # Procesar imagen
+        # Procesar imagen con YOLOv8
         processed_image, detections, results = process_image(image)
         
         if not detections:
