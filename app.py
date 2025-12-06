@@ -6,17 +6,22 @@ import os
 import random
 import base64
 import io
+import threading
 from werkzeug.utils import secure_filename
 from datetime import datetime
 
-# --- Configuración del Modelo YOLO ---
+# --- Configuración del Modelo YOLO con Thread-Safety ---
 # Cargar el modelo YOLOv8 para detección de rostros
 # El modelo se descargará automáticamente si no existe localmente.
+model = None
+model_lock = threading.Lock()
+
 try:
     model = YOLO("yolov8n-face.pt")
+    print("✓ Modelo YOLO cargado correctamente")
 except Exception as e:
-    print(f"Error al cargar el modelo YOLO: {e}")
-    # Considerar o manejar la excepción apropiadamente.
+    print(f"✗ Error al cargar el modelo YOLO: {e}")
+    raise RuntimeError(f"No se pudo cargar el modelo YOLO: {e}")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -41,8 +46,9 @@ def process_image(image):
     detections_list = []
     results_detections = []
     
-    # Realizar la inferencia con el modelo YOLO (verbose=False para un output limpio)
-    results = model(image, verbose=False)
+    # Thread-safe inference con modelo YOLO
+    with model_lock:
+        results = model(image, verbose=False)
     
     for r in results:
         # 'r.boxes' contiene todos los cuadros delimitadores detectados
@@ -158,7 +164,12 @@ def upload_file():
         
         return jsonify(response), 200
     
+    except FileNotFoundError as e:
+        return jsonify({'error': f'File system error: {str(e)}'}), 500
+    except ValueError as e:
+        return jsonify({'error': f'Invalid value: {str(e)}'}), 400
     except Exception as e:
+        print(f"Error en /upload: {str(e)}")
         return jsonify({'error': f'Error processing image: {str(e)}'}), 500
 
 @app.route('/download/<filename>')

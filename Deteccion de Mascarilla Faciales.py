@@ -21,12 +21,15 @@ mp_face = mp.solutions.face_detection
 
 def descargar_imagen(url):
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
         image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
         return image
-    except: # mensaje de si no se peude descargar la imagen
-        print("Error al descargar la imagen:", url)
+    except requests.RequestException as e:
+        print(f"Error al descargar la imagen {url}: {e}")
+        return None
+    except Exception as e:
+        print(f"Error inesperado al procesar imagen {url}: {e}")
         return None
 
 with mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.5) as face_detection:
